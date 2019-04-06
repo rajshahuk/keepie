@@ -108,6 +108,7 @@ const upTestFn = async function (dbConfig, tries) {
 
     // console.log("testing connection r>", result);
     if (result instanceof(Error) && tries < triesLimit) {
+        client.end();
         await new Promise((resolve, reject) => {
             setTimeout(_ => resolve([]), 500);
         });
@@ -117,11 +118,15 @@ const upTestFn = async function (dbConfig, tries) {
     let queryResult = await client.query("select 1;").catch(e => e);
     // console.log("testing connection qr>", queryResult);
     if (queryResult instanceof(Error) && tries < triesLimit) {
+        client.end();
         await new Promise((resolve, reject) => {
             setTimeout(_ => resolve([]), 500);
         });
         return await upTestFn(dbConfig, tries + 1);
     }
+
+    // .. Otherwise it worked but we still need to end the connection
+    client.end();
     return true;
 };
 
@@ -134,18 +139,25 @@ async function startDb(pgPath, dbDir, startOrRun, password, sqlScriptsDir) {
     let socketNumber = "" + listenerAddress.port;
                 
     // rewrite the port in postgresql.conf
-    let config = path.join(dbDir, "postgresql.conf");
-    let file = await fs.promises.readFile(config);
-    let portChanged = file.replace(
+    const config = path.join(dbDir, "postgresql.conf");
+    const file = await fs.promises.readFile(config);
+    const portChanged = file.replace(
             /^[#]*port = .*/gm, "port = " + socketNumber
     );
 
-    let runDir = path.join(dbDir, "/run");
-    let sockDirChanged = portChanged.replace(
+    const runDir = path.join(dbDir, "/run");
+    const sockDirChanged = portChanged.replace(
             /^[#]*unix_socket_directories = .*/gm,
         "unix_socket_directories = '" + runDir + "'"
     );
-    await fs.promises.writeFile(config, sockDirChanged);
+
+    const logLevelEnv = process.env["PGLOGLEVEL"];
+    const logLevelChanged = logLevelEnv !== undefined && logLevelEnv.length > 0
+          ? sockDirChanged.replace(/^[#]*log_min_messages = .*/gm,
+                                   "log_min_messages = '" + logLevelEnv + "'")
+          : sockDirChanged;
+    
+    await fs.promises.writeFile(config, logLevelChanged);
     await fs.promises.writeFile(path.join(dbDir,"port"), socketNumber);
 
     let postgresPath = path.join(pgPath, "postgres");
@@ -218,7 +230,10 @@ host  all all ::1/128      password\n`);
                     "-U", "postgres",
                    "postgres"];
         let childProcess = spawn(psqlPath, args, {
-            stdio: "inherit", //maybe we should copy the env somehow
+            stdio: [    // "inherit", //maybe we should copy the env somehow
+                0, "pipe", 2
+            ],
+            detached: false,
             env: Object.assign({
                 "PSQL_EDITOR": process.env["PSQL_EDITOR"],
                 "EMACS_SERVER_FILE": process.env["EMACS_SERVER_FILE"],
@@ -232,7 +247,8 @@ host  all all ::1/128      password\n`);
     // Send the "db's up" event
     exports.events.emit("dbUp", {
         pgPool: pgPool,
-        psql: psqlFunc
+        psql: psqlFunc,
+        pgProcess: startChild
     });
     
     //await sqlInit.end();
@@ -342,24 +358,41 @@ async function guessPgBin() {
     }
 }
 
+// A deferred holder contains a value that is not computed until
+// valueOf ... we use it to ensure we can get the hostPort from the
+// server after it's started
+const DeferredHolder = function () {
+    this.hostPort = undefined;
+    this.setHost = function (hostPort) { this.hostPort = hostPort; };
+};
+DeferredHolder.prototype.valueOf = function () {
+    const keepieUrlEnvValue = process.env["KEEPIEURL"];
+    if (keepieUrlEnvValue !== undefined && keepieUrlEnvValue !== "") {
+        return keepieUrlEnvValue;
+    }
+    return this.hostPort + "/keepie-request";
+};
+
+
 exports.boot = async function (portToListen, options) {
-    let opts = options != undefined ? options : {};
-    let listenAddress = opts.listenAddress;
-    let rootDir = opts.rootDir != undefined ? opts.rootDir : __dirname + "/www";
-    let secretPath = opts.secretPath != undefined
-        ? opts.secretPath : "/pg/keepie-secret/";
-    let serviceName = opts.serviceName != undefined ? opts.serviceName : "pg-demo";
-    let pgBinDir = opts.pgBinDir != undefined ? opts.pgBinDir : await guessPgBin();
-    let sqlScriptsDir = opts.sqlScriptsDir != undefined
-        ?  opts.sqlScriptsDir : path.join(__dirname, "sql-scripts");
-    let dbDir = opts.dbDir != undefined ? opts.dbDir : path.join(__dirname, "dbdir");
-    let pgPoolConfig = opts.pgPoolConfig != undefined
-        ? opts.pgPoolConfig : {  // default pgPool config
+    const defaultKeepieUrl = new DeferredHolder();
+    const {
+        listenAddress,
+        listenerCallback,
+        appCallback,
+        rootDir = path.join(__dirname, "/www"),
+        secretPath = "/pg/keepie-secret",
+        serviceName = "pg-demo",
+        keepieUrl = defaultKeepieUrl,
+        pgBinDir = await guessPgBin(),
+        sqlScriptsDir = path.join(__dirname, "sql-scripts"),
+        dbDir = path.join(__dirname, "dbdir"),
+        pgPoolConfig = {
             max: 10,
             idleTimeoutMillis: 30 * 1000,
             connectionTimeoutMillis: 2 * 1000
-        };
-    let appCallback = opts.appCallback;
+        }
+    } = options != undefined ? options : {};
 
     // Ensure we don't have keys we don't want
     Object.keys(pgPoolConfig).forEach(key => {
@@ -415,35 +448,29 @@ exports.boot = async function (portToListen, options) {
         let hostToListen = addr.address == "::" ? "localhost" : addr.address;
         app.port = addr.port;
 
-        let listenerCallback = opts.listenerCallback;
         if (typeof(listenerCallback) === "function") {
-            listenerCallback(addr);
+            listenerCallback(addr, listener);
         }
 
         console.log("keepie pg listening on ", app.port);
 
+        const hostScheme = "http://" + hostToListen + ":" + addr.port;
+        defaultKeepieUrl.setHost(hostScheme);
+        const keepieUrlValue = keepieUrl.valueOf();
+
         // Where do we receive passwords from keepie?
-        let passwordReceiptUrl =
-            "http://" + hostToListen + ":" + addr.port + secretPath;
-
-        // What address do we call keepie on? by default this server (for dev)
-        let defaultKeepieUrl = process.env["KEEPIEURL"];
-        if (defaultKeepieUrl == undefined || defaultKeepieUrl == "") {
-            defaultKeepieUrl =
-                "http://" + hostToListen + ":" + addr.port + "/keepie-request";
-        }
-
-        // Allow it to be defined in the opts
-        let keepieUrl = opts.keepieUrl != undefined ? opts.keepieUrl : defaultKeepieUrl;
+        let passwordReceiptUrl = hostScheme + secretPath;
 
         // And get the keepie response
-        console.log("fetching keepie auth from", keepieUrl, "to", passwordReceiptUrl);
-        let keepieResponse = await fetch(keepieUrl,{
+        console.log("fetching keepie auth from", keepieUrlValue, "to", passwordReceiptUrl);
+        let keepieResponse = await fetch(keepieUrlValue,{
             method: "POST",
             headers: { "X-Receipt-Url": passwordReceiptUrl }
         });
         console.log("keepie status", keepieResponse.status);
     });
+
+    return [app, listener];
 };
 
 if (require.main === module) {

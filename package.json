@@ -3,10 +3,12 @@
     "name": "keepie",
     "description": "Keepie keeps passwords",
     "license": "MIT",
-    "version": "0.0.25",
+    "version": "0.0.29",
     "keywords": [
         "postgresql",
-        "microservice"
+        "microservice",
+        "secrets",
+        "passwords"
     ],
     "repository": {
         "type": "git",
@@ -14,7 +16,10 @@
     },
     "main": "./server.js",
     "scripts": {
-        "test": "./test.js"
+        "test": "node ./test-keepie.js ; node test-fs-export.js"
+    },
+    "bin": {
+        "make-pgboot": "./server.js"
     },
     "dependencies": {
         "body-parser": "^1.18.3",
@@ -25,9 +30,9 @@
         "multer": "^1.3.0",
         "node-fetch": "^2.1.2",
         "pg": "^7.4.3",
-        "psql-web-app": "0.0.3",
+        "psql-web-app": "0.0.6",
         "serve-index": "^1.9.1",
-        "simple-auth-4-express": "0.0.4",
+        "simple-auth-4-express": "0.0.8",
         "sse-node": "1.0.2"
     },
     "devDependencies": {
@@ -36,6 +41,6 @@
         "sha1": "1.1.1"
     },
     "engines": {
-        "node": ">=0.6"
+        "node": ">=10.0"
     }
 }

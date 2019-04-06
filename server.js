@@ -1,4 +1,5 @@
-// keepie
+#!/usr/bin/env node
+// keepie -*- js-indent-level: 4 -*-
 // Copyright (C) 2018 by Nic Ferrier
 
 const fs = require('./fsasync.js');
@@ -14,9 +15,6 @@ const bodyParser = require("body-parser");
 const FormData = require('form-data');
 
 const plainPasswordGenerator = require("./plain.js");
-
-const app = express();
-
 
 const typeMapper = {
     "plain": plainPasswordGenerator.genPassword
@@ -41,7 +39,12 @@ const config = {
     }
 };
 
+function trygo(promise) {
+    return promise.then(value => [undefined, value]);
+}
+
 exports.boot = function (port, options) {
+    const app = express();
     let opts = options != undefined ? options : {};
     let listenAddress = options.listenAddress;
     let rootDir = opts.rootDir != undefined ? opts.rootDir : __dirname + "/www";
@@ -50,6 +53,9 @@ exports.boot = function (port, options) {
 
     let requests = {
         list: [],
+
+        // Differentiate many keepies
+        id: opts.id != undefined ? opts.id : new Date().valueOf(),
 
         add: function (service, receiptUrl) {
             requests.list.push({service: service, receiptUrl: receiptUrl});
@@ -81,12 +87,20 @@ exports.boot = function (port, options) {
                     form.append("password", servicePassword);
                     form.append("name", service);
                     console.log("sending password for", service, "to", receiptUrl);
-                    let formResponse = await fetch(matchingUrl, {
+                    
+                    let options = {
                         method: "POST",
-                        body: form,
-                        agent: false
-                    }).catch(err => {error: err});
-                    if (formResponse.error) {
+                        body: form
+                    };
+
+                    if (receiptUrl.startsWith("https") && opts.ca != undefined) {
+                        options.agent = new https.Agent({ ca: opts.ca });
+                    }
+
+                    let [formResponseErr, formResponse]
+                        = await trygo(fetch(receiptUrl, options)).catch(err => [err]);
+
+                    if (formResponseErr) {
                         console.log(
                             "error posting password for",
                             service, "to", receiptUrl, formResponse.error
@@ -100,7 +114,7 @@ exports.boot = function (port, options) {
         }
     };
 
-    setInterval(requests.process, 2000);
+    let interval = setInterval(requests.process, 2000);
 
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({extended: true}));
@@ -109,6 +123,7 @@ exports.boot = function (port, options) {
     app.post("/keepie/:service([A-Za-z0-9_-]+)/request", function (req, response) {
         let { service } = req.params;
         let receiptUrl = req.get("x-receipt-url");
+        console.log("keepie>", service, receiptUrl);
         if (service !== undefined && receiptUrl !== undefined) {
             console.log("received request to send", service, "to", receiptUrl);
             requests.add(service, receiptUrl);
@@ -126,11 +141,13 @@ exports.boot = function (port, options) {
     let listener = app.listen(port, listenAddress, async function () {
         let listenerCallback = opts.listenerCallback;
         if (typeof(listenerCallback) === "function") {
-            listenerCallback(listener.address());
+            listenerCallback(listener);
         }
 
         console.log("keepie listening on ", listener.address().port);
     });
+
+    return interval;
 };
 
 async function copyPgBootDemo () {

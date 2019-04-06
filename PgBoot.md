@@ -18,7 +18,7 @@ extended it to be more and more useful for a developer.
 * it rewrites the `pg_hba` file and reloads the server config
  * the server now can only be accessed with the keepie provided password
 * it applies the SQL it finds in a sql-scripts directory to the running DB
-
+* it can change the log level of the server
 
 ## What operating systems support pgBoot.js?
 
@@ -31,10 +31,11 @@ pgBoot.js has been tested on:
 
 ## Using pgBoot.js on the command line
 
-You can use pgBoot.js to run your own Keepie based service with
-Postgresql.
+If you have cloned this repository or npm installed keepie, you can
+use pgBoot.js to run your own Keepie based service with Postgresql.
 
-Run it as a server on its own:
+Change to the directory with pgBoot.js and run it as a server on its
+own:
 
 ```sh
 node pgBoot.js 5000
@@ -115,6 +116,23 @@ it:
 * `pgPoolConfig` - see [pgPool](https://node-postgres.com/api/pool) about config for the postgres connection pool
 
 *Note: in `pgPoolConfig` authentication or host details are ignored.*
+
+### Changing the log level of Postgres
+
+Postgres stores the log level of the server in the `postgresql.conf` file.
+
+pgBoot let's you change this when the postgres starts if you have
+specified the `PGLOGLEVEL` environment variable.
+
+For example:
+
+```
+$ export PGLOGLEVEL=notice
+$ node pgBoot 5000
+```
+
+would start the postgresql with the min log level set to `notice`.
+
 
 ## How does pgBoot.js guess where the PG binaries are?
 
